@@ -31,9 +31,10 @@ sanitize_input() {
 # CONFIGURATION
 # ============================================
 CHR_VERSION="7.16.1"
-CHR_URL="https://download.mikrotik.com/routeros/${CHR_VERSION}/chr-${CHR_VERSION}.img.zip"
-CHR_ZIP="chr-${CHR_VERSION}.img.zip"
-CHR_IMG="chr-${CHR_VERSION}.img"
+# URL will be set after boot mode detection (UEFI/Legacy)
+CHR_URL=""
+CHR_ZIP=""
+CHR_IMG=""
 WORK_DIR="/tmp/chr-install"
 MOUNT_POINT="/mnt/chr"
 
@@ -47,6 +48,7 @@ FORCE_DOWNLOAD=false
 VERIFY_WRITE=true
 AUTO_YES=false
 AUTO_REBOOT=false
+FORCE_LEGACY=false
 
 # ============================================
 # ARGUMENT PARSING
@@ -62,6 +64,7 @@ usage() {
     echo "  --reboot         Automatic reboot (requires --yes)"
     echo "  --version VER    CHR version (default: $CHR_VERSION)"
     echo "  --password PASS  Admin password (auto-generated)"
+    echo "  --legacy         Force Legacy BIOS mode (not UEFI)"
     echo "  -h, --help       Show help"
     echo ""
     echo "Examples:"
@@ -91,6 +94,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --reboot)
             AUTO_REBOOT=true
+            shift
+            ;;
+        --legacy)
+            FORCE_LEGACY=true
             shift
             ;;
         --version)
@@ -133,12 +140,29 @@ fi
 # ============================================
 # BOOT MODE DETECTION (UEFI/LEGACY)
 # ============================================
-if [[ -d /sys/firmware/efi ]]; then
+if [[ "$FORCE_LEGACY" == true ]]; then
+    BOOT_MODE="LEGACY"
+    log_info "Boot mode: Legacy BIOS (forced)"
+elif [[ -d /sys/firmware/efi ]]; then
     BOOT_MODE="UEFI"
     log_info "Boot mode: UEFI"
+    log_info "Will use UEFI-compatible image (fat-chr)"
 else
     BOOT_MODE="LEGACY"
     log_info "Boot mode: Legacy BIOS"
+fi
+
+# Set URL based on boot mode
+if [[ "$BOOT_MODE" == "UEFI" ]]; then
+    # UEFI image from https://github.com/tikoci/fat-chr
+    CHR_URL="https://github.com/tikoci/fat-chr/releases/download/${CHR_VERSION}/chr-${CHR_VERSION}.uefi-fat.raw"
+    CHR_IMG="chr-${CHR_VERSION}.uefi-fat.raw"
+    CHR_ZIP=""
+else
+    # Official MikroTik image for Legacy BIOS
+    CHR_URL="https://download.mikrotik.com/routeros/${CHR_VERSION}/chr-${CHR_VERSION}.img.zip"
+    CHR_ZIP="chr-${CHR_VERSION}.img.zip"
+    CHR_IMG="chr-${CHR_VERSION}.img"
 fi
 
 # ============================================
@@ -147,11 +171,6 @@ fi
 log_info "Checking dependencies..."
 
 REQUIRED_TOOLS="wget unzip fdisk dd mount umount file md5sum xxd"
-
-# Additional tools for UEFI
-if [[ "$BOOT_MODE" == "UEFI" ]]; then
-    REQUIRED_TOOLS="$REQUIRED_TOOLS parted mkfs.vfat"
-fi
 
 MISSING_TOOLS=""
 
@@ -193,35 +212,50 @@ log_debug "Free space: $(df -h "$WORK_DIR" | tail -1 | awk '{print $4}')"
 # ============================================
 if [[ "$FORCE_DOWNLOAD" == true ]] || [[ ! -f "$CHR_IMG" ]]; then
     rm -f "$CHR_ZIP" "$CHR_IMG" "${CHR_IMG}.modified"
+
+    log_info "Downloading CHR ${CHR_VERSION} ($BOOT_MODE)..."
     
-    log_info "Downloading CHR ${CHR_VERSION}..."
-    wget --progress=bar:force -O "$CHR_ZIP" "$CHR_URL"
-    
-    # Check downloaded file size
-    ACTUAL_SIZE=$(stat -c%s "$CHR_ZIP")
-    log_debug "Downloaded file size: $ACTUAL_SIZE bytes"
-    
-    if [[ $ACTUAL_SIZE -lt 30000000 ]]; then
-        log_error "File too small, download incomplete"
-        exit 1
-    fi
-    
-    # Check file type
-    FILE_TYPE=$(file "$CHR_ZIP")
-    log_debug "File type: $FILE_TYPE"
-    
-    if echo "$FILE_TYPE" | grep -q "Zip archive"; then
-        log_info "Extracting ZIP..."
-        unzip -o "$CHR_ZIP"
-    elif echo "$FILE_TYPE" | grep -q "gzip"; then
-        log_info "Extracting GZIP..."
-        gunzip -c "$CHR_ZIP" > "$CHR_IMG"
+    if [[ "$BOOT_MODE" == "UEFI" ]]; then
+        # UEFI: download RAW image directly
+        wget --progress=bar:force -O "$CHR_IMG" "$CHR_URL"
+        
+        ACTUAL_SIZE=$(stat -c%s "$CHR_IMG")
+        log_debug "Downloaded file size: $ACTUAL_SIZE bytes"
+        
+        if [[ $ACTUAL_SIZE -lt 30000000 ]]; then
+            log_error "File too small, download incomplete"
+            log_error "Version $CHR_VERSION may not be available for UEFI"
+            log_info "Try --legacy or a different version"
+            exit 1
+        fi
     else
-        log_error "Unknown format: $FILE_TYPE"
-        exit 1
+        # Legacy: download ZIP and extract
+        wget --progress=bar:force -O "$CHR_ZIP" "$CHR_URL"
+
+        ACTUAL_SIZE=$(stat -c%s "$CHR_ZIP")
+        log_debug "Downloaded file size: $ACTUAL_SIZE bytes"
+
+        if [[ $ACTUAL_SIZE -lt 30000000 ]]; then
+            log_error "File too small, download incomplete"
+            exit 1
+        fi
+
+        FILE_TYPE=$(file "$CHR_ZIP")
+        log_debug "File type: $FILE_TYPE"
+
+        if echo "$FILE_TYPE" | grep -q "Zip archive"; then
+            log_info "Extracting ZIP..."
+            unzip -o "$CHR_ZIP"
+        elif echo "$FILE_TYPE" | grep -q "gzip"; then
+            log_info "Extracting GZIP..."
+            gunzip -c "$CHR_ZIP" > "$CHR_IMG"
+        else
+            log_error "Unknown format: $FILE_TYPE"
+            exit 1
+        fi
+
+        rm -f "$CHR_ZIP"
     fi
-    
-    rm -f "$CHR_ZIP"
 else
     log_info "Using existing image: $CHR_IMG"
 fi
@@ -257,119 +291,6 @@ log_debug "Partition table:"
 fdisk -l "$CHR_IMG" 2>/dev/null | grep -E "^(Disk|Device|${CHR_IMG})" || true
 
 log_info "Image validation passed ✓"
-
-# ============================================
-# UEFI CONVERSION (if needed)
-# ============================================
-if [[ "$BOOT_MODE" == "UEFI" ]]; then
-    log_info "Converting image for UEFI..."
-    
-    CHR_IMG_UEFI="${CHR_IMG%.img}-uefi.img"
-    
-    # Original partition sizes
-    # Remove boot flag (*) so columns don't shift
-    PART1_START=$(fdisk -l "$CHR_IMG" 2>/dev/null | grep "${CHR_IMG}1" | sed 's/\*//' | awk '{print $2}')
-    PART1_END=$(fdisk -l "$CHR_IMG" 2>/dev/null | grep "${CHR_IMG}1" | sed 's/\*//' | awk '{print $3}')
-    PART1_SECTORS=$((PART1_END - PART1_START + 1))
-    
-    PART2_START=$(fdisk -l "$CHR_IMG" 2>/dev/null | grep "${CHR_IMG}2" | sed 's/\*//' | awk '{print $2}')
-    PART2_END=$(fdisk -l "$CHR_IMG" 2>/dev/null | grep "${CHR_IMG}2" | sed 's/\*//' | awk '{print $3}')
-    PART2_SECTORS=$((PART2_END - PART2_START + 1))
-    
-    # Check that values were obtained
-    if [[ -z "$PART1_START" || -z "$PART2_START" ]]; then
-        log_error "Failed to determine image partitions"
-        exit 1
-    fi
-    
-    # ESP size: 34MB = 69632 sectors
-    ESP_SECTORS=69632
-    ESP_SIZE_MB=34
-    
-    # New image size: ESP + original partitions + GPT overhead
-    TOTAL_SECTORS=$((2048 + ESP_SECTORS + PART1_SECTORS + PART2_SECTORS + 34))
-    NEW_IMG_SIZE=$((TOTAL_SECTORS * 512))
-    
-    log_debug "Creating UEFI image of $((NEW_IMG_SIZE / 1024 / 1024)) MB"
-    
-    # Create empty image
-    dd if=/dev/zero of="$CHR_IMG_UEFI" bs=1M count=$((NEW_IMG_SIZE / 1024 / 1024 + 1)) status=none
-    
-    # Create GPT partition table
-    parted -s "$CHR_IMG_UEFI" mklabel gpt
-    
-    # ESP partition (EFI System Partition)
-    ESP_START=2048
-    ESP_END=$((ESP_START + ESP_SECTORS - 1))
-    parted -s "$CHR_IMG_UEFI" mkpart primary fat32 ${ESP_START}s ${ESP_END}s
-    parted -s "$CHR_IMG_UEFI" set 1 esp on
-    parted -s "$CHR_IMG_UEFI" set 1 boot on
-    
-    # Boot partition (from original)
-    BOOT_START=$((ESP_END + 1))
-    BOOT_END=$((BOOT_START + PART1_SECTORS - 1))
-    parted -s "$CHR_IMG_UEFI" mkpart primary ext4 ${BOOT_START}s ${BOOT_END}s
-    
-    # Root partition (from original)
-    ROOT_START=$((BOOT_END + 1))
-    ROOT_END=$((ROOT_START + PART2_SECTORS - 1))
-    parted -s "$CHR_IMG_UEFI" mkpart primary ext4 ${ROOT_START}s ${ROOT_END}s
-    
-    log_debug "Copying partitions from original image..."
-    
-    # Copy boot partition
-    dd if="$CHR_IMG" of="$CHR_IMG_UEFI" bs=512 skip=$PART1_START seek=$BOOT_START count=$PART1_SECTORS conv=notrunc status=none
-    
-    # Copy root partition
-    dd if="$CHR_IMG" of="$CHR_IMG_UEFI" bs=512 skip=$PART2_START seek=$ROOT_START count=$PART2_SECTORS conv=notrunc status=none
-    
-    log_debug "Creating EFI partition..."
-    
-    # Create loop device for ESP
-    LOOP_DEV=$(losetup -f --show -o $((ESP_START * 512)) --sizelimit $((ESP_SECTORS * 512)) "$CHR_IMG_UEFI")
-    
-    # Format ESP
-    mkfs.vfat -F 32 -n "EFI" "$LOOP_DEV" >/dev/null 2>&1
-    
-    # Mount ESP
-    ESP_MOUNT="/mnt/chr-esp"
-    mkdir -p "$ESP_MOUNT"
-    mount "$LOOP_DEV" "$ESP_MOUNT"
-    
-    # Mount original boot partition to copy EFI files
-    BOOT_LOOP=$(losetup -f --show -o $((PART1_START * 512)) --sizelimit $((PART1_SECTORS * 512)) "$CHR_IMG")
-    BOOT_MOUNT="/mnt/chr-boot"
-    mkdir -p "$BOOT_MOUNT"
-    mount -o ro "$BOOT_LOOP" "$BOOT_MOUNT"
-    
-    # Copy EFI files
-    if [[ -d "$BOOT_MOUNT/EFI" ]]; then
-        cp -r "$BOOT_MOUNT/EFI" "$ESP_MOUNT/"
-        log_debug "EFI files copied from image"
-    else
-        # Create minimal EFI structure manually
-        mkdir -p "$ESP_MOUNT/EFI/BOOT"
-        if [[ -f "$BOOT_MOUNT/vmlinuz" ]]; then
-            cp "$BOOT_MOUNT/vmlinuz" "$ESP_MOUNT/EFI/BOOT/BOOTX64.EFI"
-            log_debug "Created EFI bootloader from vmlinuz"
-        fi
-    fi
-    
-    # Unmount everything
-    umount "$BOOT_MOUNT" 2>/dev/null || true
-    losetup -d "$BOOT_LOOP" 2>/dev/null || true
-    umount "$ESP_MOUNT" 2>/dev/null || true
-    losetup -d "$LOOP_DEV" 2>/dev/null || true
-    rmdir "$ESP_MOUNT" 2>/dev/null || true
-    rmdir "$BOOT_MOUNT" 2>/dev/null || true
-    
-    # Use UEFI image instead of original
-    CHR_IMG="$CHR_IMG_UEFI"
-    
-    log_info "UEFI image created ✓"
-    log_debug "New partition table:"
-    parted -s "$CHR_IMG" print 2>/dev/null || fdisk -l "$CHR_IMG" 2>/dev/null | head -20
-fi
 
 # ============================================
 # NETWORK PARAMETERS DETECTION
@@ -414,10 +335,10 @@ check_same_subnet() {
 
 if check_same_subnet "$SERVER_IP" "$GATEWAY" "$NETMASK"; then
     GATEWAY_IN_SUBNET=true
-    log_info "Gateway in same subnet - using simple route"
+    log_info "Gateway in same subnet"
 else
     GATEWAY_IN_SUBNET=false
-    log_info "Gateway in different subnet - using recursive routing (scope)"
+    log_info "Gateway in different subnet - using network=$GATEWAY"
 fi
 
 log_info "Interface: $INTERFACE | Address: $ADDRESS | Gateway: $GATEWAY"
@@ -469,19 +390,12 @@ else
     # Mounting
     mkdir -p "$MOUNT_POINT"
 
-    # For UEFI root partition = 3, for Legacy = 2
-    if [[ "$BOOT_MODE" == "UEFI" ]]; then
-        ROOT_PART_NUM=3
-    else
-        ROOT_PART_NUM=2
-    fi
+    # Root partition = 2 for both modes (fat-chr UEFI and official Legacy)
+    ROOT_PART_NUM=2
 
-    OFFSET_SECTORS=$(fdisk -l "$CHR_IMG_MOD" 2>/dev/null | grep "${CHR_IMG_MOD}${ROOT_PART_NUM}" | awk '{print $2}')
+    # Remove boot flag (*) so columns don't shift
+    OFFSET_SECTORS=$(fdisk -l "$CHR_IMG_MOD" 2>/dev/null | grep "${CHR_IMG_MOD}${ROOT_PART_NUM}" | sed 's/\*//' | awk '{print $2}')
     if [[ -z "$OFFSET_SECTORS" ]]; then
-        if [[ "$BOOT_MODE" == "UEFI" ]]; then
-            log_error "Failed to determine offset for UEFI image"
-            exit 1
-        fi
         OFFSET_BYTES=33571840
     else
         OFFSET_BYTES=$((OFFSET_SECTORS * 512))
@@ -501,17 +415,17 @@ else
     fi
     
     # Create autorun
+    # If gateway in different subnet, use network= to specify gateway
     if [[ "$GATEWAY_IN_SUBNET" == "true" ]]; then
-        ROUTE_COMMANDS="/ip route add dst-address=0.0.0.0/0 gateway=${GATEWAY}"
+        IP_ADD_CMD="/ip address add address=${ADDRESS} interface=ether1"
     else
-        ROUTE_COMMANDS="/ip route add dst-address=${GATEWAY}/32 gateway=ether1 scope=10
-/ip route add dst-address=0.0.0.0/0 gateway=${GATEWAY} target-scope=11"
+        IP_ADD_CMD="/ip address add address=${ADDRESS} interface=ether1 network=${GATEWAY}"
     fi
-    
+
     cat > "$MOUNT_POINT/rw/autorun.scr" <<EOF
 /ip dhcp-client remove [find]
-/ip address add address=${ADDRESS} interface=ether1
-${ROUTE_COMMANDS}
+${IP_ADD_CMD}
+/ip route add dst-address=0.0.0.0/0 gateway=${GATEWAY}
 /ip dns set servers=${DNS_SERVERS}
 /ip service set telnet disabled=yes
 /ip service set ftp disabled=yes
