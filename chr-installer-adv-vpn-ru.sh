@@ -595,6 +595,12 @@ EOF
 
 sync
 
+# Для fat-chr (UEFI) дублируем autorun.scr в разные места
+if [[ "$BOOT_MODE" == "UEFI" ]]; then
+    cp "$MOUNT_POINT/rw/autorun.scr" "$MOUNT_POINT/autorun.scr" 2>/dev/null || true
+    log_debug "Скопирован autorun.scr в корень раздела (для fat-chr)"
+fi
+
 log_debug "autorun.scr создан:"
 cat "$MOUNT_POINT/rw/autorun.scr" | head -20
 log_debug "..."
