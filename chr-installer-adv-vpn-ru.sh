@@ -39,7 +39,7 @@ sanitize_input() {
 # ============================================
 # КОНФИГУРАЦИЯ
 # ============================================
-CHR_VERSION="7.21.3"
+CHR_VERSION="7.16.1"
 # URL будет установлен после определения режима загрузки (UEFI/Legacy)
 CHR_URL=""
 CHR_ZIP=""
@@ -231,10 +231,11 @@ fi
 
 # Установка URL в зависимости от режима загрузки
 if [[ "$BOOT_MODE" == "UEFI" ]]; then
-    # UEFI образ с https://github.com/tikoci/fat-chr (GPT + EFI)
-    CHR_URL="https://github.com/tikoci/fat-chr/releases/download/${CHR_VERSION}/chr-${CHR_VERSION}.img.zip"
-    CHR_ZIP="chr-${CHR_VERSION}.img.zip"
-    CHR_IMG="chr-${CHR_VERSION}.img"
+    # UEFI образ fat-chr 7.16 (проверенный, autorun.scr работает)
+    CHR_URL="https://github.com/tikoci/fat-chr/releases/download/Build11085703131-jaclaz/chr-7.16.uefi-fat-jaclaz.raw"
+    CHR_ZIP=""
+    CHR_IMG="chr-7.16.uefi-fat.raw"
+    log_info "UEFI: используется fat-chr 7.16 (autorun.scr поддерживается)"
 else
     # Официальный MikroTik образ для Legacy BIOS
     CHR_URL="https://download.mikrotik.com/routeros/${CHR_VERSION}/chr-${CHR_VERSION}.img.zip"
@@ -290,43 +291,47 @@ log_debug "Свободное место: $(df -h "$WORK_DIR" | tail -1 | awk '{
 if [[ "$FORCE_DOWNLOAD" == true ]] || [[ ! -f "$CHR_IMG" ]]; then
     rm -f "$CHR_ZIP" "$CHR_IMG" "${CHR_IMG}.modified"
 
-    log_info "Скачивание CHR ${CHR_VERSION} ($BOOT_MODE)..."
-    
-    # Скачиваем ZIP и распаковываем (одинаково для Legacy и UEFI)
-    wget --progress=bar:force -O "$CHR_ZIP" "$CHR_URL"
-
-    ACTUAL_SIZE=$(stat -c%s "$CHR_ZIP")
-    log_debug "Размер скачанного файла: $ACTUAL_SIZE байт"
-
-    if [[ $ACTUAL_SIZE -lt 30000000 ]]; then
-        log_error "Файл слишком маленький, скачивание неполное"
-        if [[ "$BOOT_MODE" == "UEFI" ]]; then
-            log_error "Возможно, версия $CHR_VERSION недоступна для UEFI (fat-chr)"
-            log_info "Попробуйте --legacy или другую версию"
+    if [[ "$BOOT_MODE" == "UEFI" ]]; then
+        # UEFI: скачиваем RAW образ напрямую
+        log_info "Скачивание fat-chr 7.16 (UEFI)..."
+        wget --progress=bar:force -O "$CHR_IMG" "$CHR_URL"
+        
+        ACTUAL_SIZE=$(stat -c%s "$CHR_IMG")
+        log_debug "Размер скачанного файла: $ACTUAL_SIZE байт"
+        
+        if [[ $ACTUAL_SIZE -lt 100000000 ]]; then
+            log_error "Файл слишком маленький, скачивание неполное"
+            exit 1
         fi
-        exit 1
-    fi
-
-    FILE_TYPE=$(file "$CHR_ZIP")
-    log_debug "Тип файла: $FILE_TYPE"
-
-    if echo "$FILE_TYPE" | grep -q "Zip archive"; then
-        log_info "Распаковка ZIP..."
-        unzip -o "$CHR_ZIP"
-        # fat-chr архивы содержат chr-efi.img вместо chr-VERSION.img
-        if [[ "$BOOT_MODE" == "UEFI" ]] && [[ -f "chr-efi.img" ]] && [[ ! -f "$CHR_IMG" ]]; then
-            mv "chr-efi.img" "$CHR_IMG"
-            log_debug "Переименован chr-efi.img -> $CHR_IMG"
-        fi
-    elif echo "$FILE_TYPE" | grep -q "gzip"; then
-        log_info "Распаковка GZIP..."
-        gunzip -c "$CHR_ZIP" > "$CHR_IMG"
     else
-        log_error "Неизвестный формат: $FILE_TYPE"
-        exit 1
-    fi
+        # Legacy: скачиваем ZIP и распаковываем
+        log_info "Скачивание CHR ${CHR_VERSION} (Legacy)..."
+        wget --progress=bar:force -O "$CHR_ZIP" "$CHR_URL"
 
-    rm -f "$CHR_ZIP"
+        ACTUAL_SIZE=$(stat -c%s "$CHR_ZIP")
+        log_debug "Размер скачанного файла: $ACTUAL_SIZE байт"
+
+        if [[ $ACTUAL_SIZE -lt 30000000 ]]; then
+            log_error "Файл слишком маленький, скачивание неполное"
+            exit 1
+        fi
+
+        FILE_TYPE=$(file "$CHR_ZIP")
+        log_debug "Тип файла: $FILE_TYPE"
+
+        if echo "$FILE_TYPE" | grep -q "Zip archive"; then
+            log_info "Распаковка ZIP..."
+            unzip -o "$CHR_ZIP"
+        elif echo "$FILE_TYPE" | grep -q "gzip"; then
+            log_info "Распаковка GZIP..."
+            gunzip -c "$CHR_ZIP" > "$CHR_IMG"
+        else
+            log_error "Неизвестный формат: $FILE_TYPE"
+            exit 1
+        fi
+
+        rm -f "$CHR_ZIP"
+    fi
 else
     log_info "Используется существующий образ: $CHR_IMG"
 fi
@@ -457,16 +462,9 @@ log_debug "Структура разделов образа:"
 fdisk -l "$CHR_IMG_MOD" 2>/dev/null | head -20 || true
 
 # Определение номера раздела с данными
-# fat-chr UEFI: 3 раздела (EFI, boot, root) - нужен раздел 3
-# Legacy MikroTik: 2 раздела (boot, root) - нужен раздел 2
-PART_COUNT=$(fdisk -l "$CHR_IMG_MOD" 2>/dev/null | grep "^${CHR_IMG_MOD}" | wc -l)
-if [[ "$BOOT_MODE" == "UEFI" ]] && [[ "$PART_COUNT" -ge 3 ]]; then
-    ROOT_PART_NUM=3
-    log_debug "UEFI образ с $PART_COUNT разделами, используем раздел $ROOT_PART_NUM"
-else
-    ROOT_PART_NUM=2
-    log_debug "Legacy образ, используем раздел $ROOT_PART_NUM"
-fi
+# fat-chr 7.16 и Legacy MikroTik: раздел 2 (Linux filesystem)
+ROOT_PART_NUM=2
+log_debug "Используем раздел $ROOT_PART_NUM"
 
 OFFSET_SECTORS=$(fdisk -l "$CHR_IMG_MOD" 2>/dev/null | grep "${CHR_IMG_MOD}${ROOT_PART_NUM}" | sed 's/\*//' | awk '{print $2}')
 if [[ -z "$OFFSET_SECTORS" ]]; then
@@ -520,6 +518,10 @@ ${IP_ADD_CMD}
 /ip service set api-ssl disabled=yes
 /ip service set ssh disabled=no port=22
 /ip service set winbox disabled=no
+/ip neighbor discovery-settings set discover-interface-list=none
+/tool mac-server set allowed-interface-list=none
+/tool mac-server mac-winbox set allowed-interface-list=none
+/tool mac-server ping set enabled=no
 /ip pool add name=vpn-pool ranges=${VPN_POOL_START}-${VPN_POOL_END}
 /ppp profile add name=vpn-profile local-address=${VPN_LOCAL_IP} remote-address=vpn-pool dns-server=${DNS_SERVERS} use-encryption=yes
 /ppp secret add name=${VPN_USER} password=${VPN_USER_PASSWORD} profile=vpn-profile service=any
@@ -538,7 +540,7 @@ ${IP_ADD_CMD}
 /certificate set ovpn-server trusted=yes
 /certificate add name=ovpn-client common-name=ovpn-client days-valid=3650 key-size=2048 key-usage=tls-client
 /certificate sign ovpn-client ca=ovpn-ca
-/interface ovpn-server server set enabled=yes default-profile=vpn-profile certificate=ovpn-server auth=sha256 cipher=aes256-cbc port=${OVPN_PORT} require-client-certificate=no
+/interface ovpn-server server set enabled=yes default-profile=vpn-profile certificate=ovpn-server port=${OVPN_PORT}
 /interface wireguard add name=wg0 listen-port=${WG_SERVER_PORT} private-key="${WG_SERVER_PRIVATE_KEY}"
 /ip address add address=${WG_NETWORK%.*}.1/24 interface=wg0
 /ip firewall nat add chain=srcnat src-address=${VPN_POOL} action=masquerade
@@ -601,10 +603,9 @@ if [[ "$BOOT_MODE" == "UEFI" ]]; then
     log_debug "Скопирован autorun.scr в корень раздела (для fat-chr)"
 fi
 
-log_debug "autorun.scr создан:"
-cat "$MOUNT_POINT/rw/autorun.scr" | head -20
-log_debug "..."
-log_debug "Размер autorun.scr: $(wc -c < "$MOUNT_POINT/rw/autorun.scr") байт"
+log_debug "autorun.scr создан (строки 30-40):"
+cat -n "$MOUNT_POINT/rw/autorun.scr" | sed -n '30,45p'
+log_debug "Размер autorun.scr: $(wc -c < "$MOUNT_POINT/rw/autorun.scr") байт, строк: $(wc -l < "$MOUNT_POINT/rw/autorun.scr")"
 
 if [[ ! -s "$MOUNT_POINT/rw/autorun.scr" ]]; then
     log_error "autorun.scr пустой или не создан!"
@@ -705,7 +706,7 @@ echo 1 > /proc/sys/kernel/sysrq
 echo u > /proc/sysrq-trigger
 sleep 2
 
-dd if="$FINAL_IMG" of="$DISK_DEVICE" bs=4M oflag=direct status=progress
+dd if="$FINAL_IMG" of="$DISK_DEVICE" bs=4M oflag=sync status=progress
 
 log_info "Запись завершена"
 
