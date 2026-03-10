@@ -384,8 +384,21 @@ else
     # Mounting
     mkdir -p "$MOUNT_POINT"
 
-    # Root partition = 2 for both modes (fat-chr UEFI and official Legacy)
-    ROOT_PART_NUM=2
+    # Partition structure diagnostics
+    log_debug "Image partition structure:"
+    fdisk -l "$CHR_IMG_MOD" 2>/dev/null | head -20 || true
+
+    # Determine data partition number
+    # fat-chr UEFI: 3 partitions (EFI, boot, root) - need partition 3
+    # Legacy MikroTik: 2 partitions (boot, root) - need partition 2
+    PART_COUNT=$(fdisk -l "$CHR_IMG_MOD" 2>/dev/null | grep "^${CHR_IMG_MOD}" | wc -l)
+    if [[ "$BOOT_MODE" == "UEFI" ]] && [[ "$PART_COUNT" -ge 3 ]]; then
+        ROOT_PART_NUM=3
+        log_debug "UEFI image with $PART_COUNT partitions, using partition $ROOT_PART_NUM"
+    else
+        ROOT_PART_NUM=2
+        log_debug "Legacy image, using partition $ROOT_PART_NUM"
+    fi
 
     # Remove boot flag (*) so columns don't shift
     OFFSET_SECTORS=$(fdisk -l "$CHR_IMG_MOD" 2>/dev/null | grep "${CHR_IMG_MOD}${ROOT_PART_NUM}" | sed 's/\*//' | awk '{print $2}')

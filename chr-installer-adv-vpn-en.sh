@@ -446,9 +446,23 @@ cp "$CHR_IMG" "$CHR_IMG_MOD"
 
 mkdir -p "$MOUNT_POINT"
 
-ROOT_PART_NUM=2
+# Partition structure diagnostics
+log_debug "Image partition structure:"
+fdisk -l "$CHR_IMG_MOD" 2>/dev/null | head -20 || true
 
-OFFSET_SECTORS=$(fdisk -l "$CHR_IMG_MOD" 2>/dev/null | grep "${CHR_IMG_MOD}${ROOT_PART_NUM}" | awk '{print $2}')
+# Determine data partition number
+# fat-chr UEFI: 3 partitions (EFI, boot, root) - need partition 3
+# Legacy MikroTik: 2 partitions (boot, root) - need partition 2
+PART_COUNT=$(fdisk -l "$CHR_IMG_MOD" 2>/dev/null | grep "^${CHR_IMG_MOD}" | wc -l)
+if [[ "$BOOT_MODE" == "UEFI" ]] && [[ "$PART_COUNT" -ge 3 ]]; then
+    ROOT_PART_NUM=3
+    log_debug "UEFI image with $PART_COUNT partitions, using partition $ROOT_PART_NUM"
+else
+    ROOT_PART_NUM=2
+    log_debug "Legacy image, using partition $ROOT_PART_NUM"
+fi
+
+OFFSET_SECTORS=$(fdisk -l "$CHR_IMG_MOD" 2>/dev/null | grep "${CHR_IMG_MOD}${ROOT_PART_NUM}" | sed 's/\*//' | awk '{print $2}')
 if [[ -z "$OFFSET_SECTORS" ]]; then
     OFFSET_BYTES=33571840
 else

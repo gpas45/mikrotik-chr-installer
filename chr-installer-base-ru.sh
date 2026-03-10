@@ -380,10 +380,23 @@ cp "$CHR_IMG" "$CHR_IMG_MOD"
 
 mkdir -p "$MOUNT_POINT"
 
-# Root раздел всегда 2 (fat-chr и стандартный образ используют partition 2)
-ROOT_PART_NUM=2
+# Диагностика структуры разделов
+log_debug "Структура разделов образа:"
+fdisk -l "$CHR_IMG_MOD" 2>/dev/null | head -20 || true
 
-OFFSET_SECTORS=$(fdisk -l "$CHR_IMG_MOD" 2>/dev/null | grep "${CHR_IMG_MOD}${ROOT_PART_NUM}" | awk '{print $2}')
+# Определение номера раздела с данными
+# fat-chr UEFI: 3 раздела (EFI, boot, root) - нужен раздел 3
+# Legacy MikroTik: 2 раздела (boot, root) - нужен раздел 2
+PART_COUNT=$(fdisk -l "$CHR_IMG_MOD" 2>/dev/null | grep "^${CHR_IMG_MOD}" | wc -l)
+if [[ "$BOOT_MODE" == "UEFI" ]] && [[ "$PART_COUNT" -ge 3 ]]; then
+    ROOT_PART_NUM=3
+    log_debug "UEFI образ с $PART_COUNT разделами, используем раздел $ROOT_PART_NUM"
+else
+    ROOT_PART_NUM=2
+    log_debug "Legacy образ, используем раздел $ROOT_PART_NUM"
+fi
+
+OFFSET_SECTORS=$(fdisk -l "$CHR_IMG_MOD" 2>/dev/null | grep "${CHR_IMG_MOD}${ROOT_PART_NUM}" | sed 's/\*//' | awk '{print $2}')
 if [[ -z "$OFFSET_SECTORS" ]]; then
     OFFSET_BYTES=33571840
 else
