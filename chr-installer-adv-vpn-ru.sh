@@ -487,6 +487,10 @@ if [[ ! -d "$MOUNT_POINT/rw" ]]; then
     mkdir -p "$MOUNT_POINT/rw"
 fi
 
+# Удаляем флаги которые могут блокировать выполнение autorun.scr
+rm -f "$MOUNT_POINT/UPGRADED" "$MOUNT_POINT/rw/REBOOT" 2>/dev/null
+log_debug "Удалены флаги UPGRADED, REBOOT"
+
 log_debug "Содержимое /rw:"
 ls -la "$MOUNT_POINT/rw/" 2>/dev/null || echo "(пусто или не существует)"
 
