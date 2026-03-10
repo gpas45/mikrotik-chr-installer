@@ -479,10 +479,16 @@ log_debug "Монтирование раздела $ROOT_PART_NUM с offset: $OF
 
 mount -o loop,offset="$OFFSET_BYTES" "$CHR_IMG_MOD" "$MOUNT_POINT"
 
+log_debug "Содержимое смонтированного раздела:"
+ls -la "$MOUNT_POINT/" || true
+
 if [[ ! -d "$MOUNT_POINT/rw" ]]; then
     log_warn "Директория /rw не существует, создаём..."
     mkdir -p "$MOUNT_POINT/rw"
 fi
+
+log_debug "Содержимое /rw:"
+ls -la "$MOUNT_POINT/rw/" 2>/dev/null || echo "(пусто или не существует)"
 
 # Создание autorun (без комментариев для совместимости с RouterOS)
 # Формируем команды маршрута в зависимости от расположения gateway
@@ -585,7 +591,10 @@ EOF
 
 sync
 
-log_debug "autorun.scr создан"
+log_debug "autorun.scr создан:"
+cat "$MOUNT_POINT/rw/autorun.scr" | head -20
+log_debug "..."
+log_debug "Размер autorun.scr: $(wc -c < "$MOUNT_POINT/rw/autorun.scr") байт"
 
 if [[ ! -s "$MOUNT_POINT/rw/autorun.scr" ]]; then
     log_error "autorun.scr пустой или не создан!"
