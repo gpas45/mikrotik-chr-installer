@@ -606,6 +606,21 @@ sync
 umount "$MOUNT_POINT"
 sync
 
+# Проверка что autorun.scr сохранился в образе
+log_debug "Проверка сохранения autorun.scr..."
+mount -o loop,offset="$OFFSET_BYTES",ro "$CHR_IMG_MOD" "$MOUNT_POINT"
+SAVED_SIZE=$(wc -c < "$MOUNT_POINT/rw/autorun.scr" 2>/dev/null || echo "0")
+log_debug "Размер autorun.scr после umount/mount: $SAVED_SIZE байт"
+if [[ "$SAVED_SIZE" -lt 100 ]]; then
+    log_error "autorun.scr не сохранился! Размер: $SAVED_SIZE байт"
+    cat "$MOUNT_POINT/rw/autorun.scr" 2>/dev/null || true
+    umount "$MOUNT_POINT"
+    exit 1
+fi
+log_debug "Первые строки сохранённого autorun.scr:"
+head -5 "$MOUNT_POINT/rw/autorun.scr"
+umount "$MOUNT_POINT"
+
 # Проверка MD5 после модификации
 MODIFIED_MD5=$(md5sum "$CHR_IMG_MOD" | awk '{print $1}')
 log_debug "MD5 после модификации: $MODIFIED_MD5"
