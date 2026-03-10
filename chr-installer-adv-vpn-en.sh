@@ -39,7 +39,7 @@ sanitize_input() {
 # ============================================
 # CONFIGURATION
 # ============================================
-CHR_VERSION="7.16.1"
+CHR_VERSION="7.21.3"
 # URL will be set after boot mode detection (UEFI/Legacy)
 CHR_URL=""
 CHR_ZIP=""
