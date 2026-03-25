@@ -430,18 +430,105 @@ else
     cat > "$MOUNT_POINT/rw/autorun.scr" <<EOF
 /ip dhcp-client remove [find]
 ${IP_ADD_CMD}
-/ip route add dst-address=0.0.0.0/0 gateway=${GATEWAY}
-/ip dns set servers=${DNS_SERVERS}
-/ip service set telnet disabled=yes
-/ip service set ftp disabled=yes
-/ip service set www disabled=yes
-/ip service set ssh disabled=no
-/ip service set api disabled=yes
-/ip service set api-ssl disabled=yes
-/ip service set winbox disabled=no
-/user set 0 name=admin password=${ADMIN_PASSWORD}
-/ip firewall nat add chain=srcnat out-interface=ether1 action=masquerade
-/file remove [find name~"autorun"]
+/ip route
+add dst-address=0.0.0.0/0 gateway=${GATEWAY}
+/ip dns
+set servers=${DNS_SERVERS} allow-remote-requests=yes
+/ip service
+set telnet disabled=yes
+set ftp disabled=yes
+set www disabled=yes
+set ssh disabled=no
+set api disabled=yes
+set api-ssl disabled=yes
+set winbox disabled=no
+/user
+set 0 name=admin password=${ADMIN_PASSWORD}
+/ip firewall nat
+add chain=srcnat out-interface=ether1 action=masquerade
+/interface list
+add name=StS
+add name=WAN
+/ip neighbor discovery-settings
+set discover-interface-list=none
+/ipv6 settings
+set disable-ipv6=yes
+/interface list member
+add interface=ether1 list=WAN
+/ip firewall address-list
+add address=zen.dioservice.ru list=management
+/ip firewall filter
+add action=accept chain=input in-interface=ether1 protocol=gre
+add action=accept chain=input comment=\
+    "accept established, related connections" connection-state=\
+    established,related
+add action=drop chain=input comment="drop invalid connections" \
+    connection-state=invalid log-prefix="DROP INPUT INVALID:"
+add action=jump chain=input comment="jump for icmp input flow" jump-target=\
+    icmp protocol=icmp
+add action=jump chain=input comment="detect intrusion" connection-state=new \
+    in-interface-list=WAN jump-target=detect-intrusion src-address-list=\
+    !management
+add action=jump chain=input comment="port knocking" connection-state=new \
+    dst-port=1234,2345,3456 in-interface-list=WAN jump-target=pk protocol=tcp
+add action=drop chain=input dst-port=12345 in-interface-list=WAN protocol=tcp \
+    src-address-list=!pk-1
+add action=drop chain=input dst-port=12345 in-interface-list=WAN protocol=tcp \
+    src-address-list=!pk-2
+add action=add-src-to-address-list address-list=management \
+    address-list-timeout=1d chain=input connection-state=new dst-port=12345 \
+    in-interface-list=WAN log=yes log-prefix=ACCESS! protocol=tcp \
+    src-address-list=pk-3
+add action=accept chain=input comment="accept management" connection-state=\
+    new dst-port=22,8291,8729 log=yes log-prefix=ACCESS! protocol=tcp \
+    src-address-list=management
+add action=accept chain=input in-interface-list=StS
+add action=drop chain=input comment="drop all other" log-prefix="IN DROP"
+add action=accept chain=forward comment=\
+    "accept established, related connections" connection-state=\
+    established,related
+add action=drop chain=forward comment="drop invalid connections" \
+    connection-state=invalid log-prefix="INV FWD"
+add action=accept chain=forward in-interface-list=StS out-interface-list=WAN
+add action=jump chain=forward comment=ICMP jump-target=icmp protocol=icmp
+add action=passthrough chain=forward comment="drop all other" log-prefix=FWD
+add action=accept chain=icmp comment="echo request"
+add action=accept chain=icmp comment="echo reply" icmp-options=0:0 protocol=\
+    icmp
+add action=accept chain=icmp comment="net unreachable" icmp-options=3:3 \
+    protocol=icmp
+add action=accept chain=icmp comment=\
+    "host unreachable fragmentation required" icmp-options=3:4 protocol=icmp
+add action=accept chain=icmp comment="time exceed" icmp-options=11:0 \
+    protocol=icmp
+add action=drop chain=icmp comment="drop all other types"
+add action=add-src-to-address-list address-list=pk-1 address-list-timeout=1m \
+    chain=pk comment=port-knocking dst-port=1234 protocol=tcp
+add action=add-src-to-address-list address-list=pk-2 address-list-timeout=1m \
+    chain=pk connection-state="" dst-port=2345 protocol=tcp
+add action=add-src-to-address-list address-list=pk-3 address-list-timeout=1m \
+    chain=pk connection-state="" dst-port=3456 protocol=tcp
+add action=return chain=detect-intrusion comment="detect intrusion" \
+    dst-limit=30,256,src-and-dst-addresses/1s
+add action=add-src-to-address-list address-list="black-list attackers" \
+    address-list-timeout=1d chain=detect-intrusion
+add action=drop chain=detect-intrusion src-address-list=\
+    "black-list attackers"
+/ip firewall service-port
+set tftp disabled=yes
+set h323 disabled=yes
+set pptp disabled=yes
+/system clock
+set time-zone-name=Asia/Yekaterinburg
+/system ntp client
+set enabled=yes
+/system ntp client servers
+add address=0.pool.ntp.org
+add address=1.pool.ntp.org
+/tool bandwidth-server
+set enabled=no
+/file
+remove [find name~"autorun"]
 EOF
     
     # Синхронизация ФС перед размонтированием
